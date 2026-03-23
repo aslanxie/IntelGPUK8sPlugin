@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app: intel-gpu-plugin
+  name: intel-gpu-plugin
+spec:
+  selector:
+    matchLabels:
+      app: intel-gpu-plugin
+  template:
+    metadata:
+      labels:
+        app: intel-gpu-plugin
+    spec:
+      containers:
+      - args:
+        - -enable-monitoring
+        - -health-management
+        - -shared-dev-num=2
+        - -allocation-policy=balanced #balanced, packed, none
+        #- -bypath=all #single, none, all
+        - -v=2
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        image: intel/intel-gpu-plugin:0.35.0
+        imagePullPolicy: IfNotPresent
+        name: intel-gpu-plugin
+        resources:
+          limits:
+            cpu: 100m
+            memory: 90Mi
+          requests:
+            cpu: 40m
+            memory: 45Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          seLinuxOptions:
+            type: container_device_plugin_t
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /dev/dri
+          name: devfs
+          readOnly: true
+        - mountPath: /sys/class/drm
+          name: sysfsdrm
+          readOnly: true
+        - mountPath: /var/lib/kubelet/device-plugins
+          name: kubeletsockets
+        - mountPath: /var/run/cdi
+          name: cdipath
+        # Plugin communicates with sidecar via this socket
+        - mountPath: /var/lib/levelzero
+          name: levelzero-socket
+
+      # --- Container 2: Level-Zero Sidecar ---
+      - name: gpu-levelzero-sidecar
+        image: docker.io/intel/intel-gpu-levelzero:0.35.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ZES_ENABLE_SYSMAN
+          value: "1"
+        args:
+        - -socket=/var/lib/levelzero/server.sock # Your requested flag
+        - -v=1                                   # Your requested flag
+        # - -wsl                                 # Add this if running in WSL
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /dev/dri
+          name: devfs
+          readOnly: true
+        - mountPath: /var/lib/levelzero
+          name: levelzero-socket
+
+      nodeSelector:
+        intel.feature.node.kubernetes.io/gpu: "true"
+        kubernetes.io/arch: amd64
+      volumes:
+      - hostPath:
+          path: /dev/dri
+        name: devfs
+      - hostPath:
+          path: /sys/class/drm
+        name: sysfsdrm
+      - hostPath:
+          path: /var/lib/kubelet/device-plugins
+        name: kubeletsockets
+      - hostPath:
+          path: /var/run/cdi
+          type: DirectoryOrCreate
+        name: cdipath
+      # Shared volume for the sidecar socket
+      - emptyDir: {}
+        name: levelzero-socket
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
